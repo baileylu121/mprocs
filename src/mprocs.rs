@@ -61,6 +61,76 @@ pub async fn mprocs_main() -> anyhow::Result<()> {
   }
 }
 
+pub async fn run_with_config(
+  procs: Vec<crate::config::ProcConfig>,
+  settings: crate::settings::Settings,
+) -> anyhow::Result<()> {
+  let mut keymap = crate::keymap::Keymap::new();
+  settings.add_to_keymap(&mut keymap)?;
+
+  let mut config = crate::config::Config::make_default(&settings)?;
+  config.procs = procs;
+
+  if let Some(global_log) = config.proc_log.clone() {
+    for proc in &mut config.procs {
+      proc.log = Some(match proc.log.take() {
+        Some(proc_log) => global_log.merged(&proc_log),
+        None => global_log.clone(),
+      });
+    }
+  }
+
+  run_mprocs(config, keymap).await
+}
+
+async fn run_mprocs(config: Config, keymap: Keymap) -> anyhow::Result<()> {
+  let (srv_to_clt_sender, srv_to_clt_receiver) = {
+    let (reader, writer) = tokio::io::simplex(8 * 1024);
+    let sender = MsgSender::new(writer);
+    let receiver = MsgReceiver::new(reader);
+    (sender, receiver)
+  };
+  let (clt_to_srv_sender, clt_to_srv_receiver) = {
+    let (reader, writer) = tokio::io::simplex(8 * 1024);
+    let sender = MsgSender::new(writer);
+    let receiver = MsgReceiver::new(reader);
+    (sender, receiver)
+  };
+
+  #[cfg(unix)]
+  crate::process::unix_processes_waiter::UnixProcessesWaiter::init()?;
+  let mut kernel = Kernel::new();
+  kernel.spawn_proc(|pc| {
+    let app_proc_id = create_app_proc(config, keymap, &pc);
+    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+
+    let app_sender = pc.get_proc_sender(app_proc_id);
+    tokio::spawn(async move {
+      client_loop(
+        ClientId(1),
+        app_sender,
+        (srv_to_clt_sender, clt_to_srv_receiver),
+      )
+      .await
+    });
+
+    ProcInit {
+      sender,
+      stop_on_quit: false,
+      status: ProcStatus::Down,
+      deps: Vec::new(),
+    }
+  });
+  tokio::spawn(async {
+    kernel.run().await;
+    #[cfg(unix)]
+    crate::process::unix_processes_waiter::UnixProcessesWaiter::uninit()
+      .log_ignore();
+  });
+
+  client_main(clt_to_srv_sender, srv_to_clt_receiver).await
+}
+
 async fn run_app() -> anyhow::Result<()> {
   let matches = command!()
     .arg(arg!(-c --config [PATH] "Config path [default: mprocs.yaml]"))
@@ -222,52 +292,7 @@ async fn run_app() -> anyhow::Result<()> {
     }
     None => {
       let logger = setup_logger();
-
-      let (srv_to_clt_sender, srv_to_clt_receiver) = {
-        let (reader, writer) = tokio::io::simplex(8 * 1024);
-        let sender = MsgSender::new(writer);
-        let receiver = MsgReceiver::new(reader);
-        (sender, receiver)
-      };
-      let (clt_to_srv_sender, clt_to_srv_receiver) = {
-        let (reader, writer) = tokio::io::simplex(8 * 1024);
-        let sender = MsgSender::new(writer);
-        let receiver = MsgReceiver::new(reader);
-        (sender, receiver)
-      };
-
-      #[cfg(unix)]
-      crate::process::unix_processes_waiter::UnixProcessesWaiter::init()?;
-      let mut kernel = Kernel::new();
-      kernel.spawn_proc(|pc| {
-        let app_proc_id = create_app_proc(config, keymap, &pc);
-        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
-
-        let app_sender = pc.get_proc_sender(app_proc_id);
-        tokio::spawn(async move {
-          client_loop(
-            ClientId(1),
-            app_sender,
-            (srv_to_clt_sender, clt_to_srv_receiver),
-          )
-          .await
-        });
-
-        ProcInit {
-          sender,
-          stop_on_quit: false,
-          status: ProcStatus::Down,
-          deps: Vec::new(),
-        }
-      });
-      tokio::spawn(async {
-        kernel.run().await;
-        #[cfg(unix)]
-        crate::process::unix_processes_waiter::UnixProcessesWaiter::uninit()
-          .log_ignore();
-      });
-
-      let ret = client_main(clt_to_srv_sender, srv_to_clt_receiver).await;
+      let ret = run_mprocs(config, keymap).await;
       drop(logger);
       ret
     }

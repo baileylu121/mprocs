@@ -35,3 +35,9 @@ mod ui_zoom_tip;
 mod vt100;
 mod widgets;
 mod yaml_val;
+
+pub use config::{CmdConfig, ProcConfig};
+pub use mprocs::run_with_config;
+pub use proc::StopSignal;
+pub use proc_log_config::{LogConfig, LogMode};
+pub use settings::Settings;

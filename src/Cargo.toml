@@ -27,7 +27,7 @@ name = "dk"
 path = "bin/dekit.rs"
 
 [lib]
-name = "lib"
+name = "libmprocs"
 path = "lib.rs"
 
 [dependencies]

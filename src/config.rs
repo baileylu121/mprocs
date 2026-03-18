@@ -153,6 +153,28 @@ pub struct ProcConfig {
 }
 
 impl ProcConfig {
+  pub fn new(
+    name: impl Into<String>,
+    shell: impl Into<String>,
+  ) -> Self {
+    let defaults = Settings::default();
+    Self {
+      name: name.into(),
+      cmd: CmdConfig::Shell {
+        shell: shell.into(),
+      },
+      cwd: None,
+      env: None,
+      autostart: true,
+      autorestart: false,
+      stop: StopSignal::default(),
+      deps: Vec::new(),
+      mouse_scroll_speed: defaults.mouse_scroll_speed,
+      scrollback_len: defaults.scrollback_len,
+      log: None,
+    }
+  }
+
   fn from_val(
     name: String,
     mouse_scroll_speed: usize,
